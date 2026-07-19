@@ -2,6 +2,8 @@
 
 A browser-native 3D golf landscape that plays like a living pencil drawing. The player can walk continuously, drive the cart, place and hit multiple balls, leave physical traces, lose a ball off-screen, find it again, and resume the same place after reloading. Normal play contains no HUD, score, minimap, aim line, or camera controls.
 
+![A pencil-drawn overhead view of the golfer exploring the course](docs/images/gameplay.png)
+
 The implementation follows the immutable product, player-experience, art-direction, and engineering guides in [`founding-documents`](./founding-documents).
 
 ## Run it
