@@ -1,0 +1,29 @@
+{
+  "name": "golf-exploration",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "screenshots": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "screenshots:extended": "EXTENDED_ART_REVIEW=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:foundation": "FOUNDATION_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:traversal": "TRAVERSAL_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:golf": "GOLF_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:environment": "ENVIRONMENT_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:first-playable": "FIRST_PLAYABLE_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify:ambient": "AMBIENT_ONLY=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node scripts/capture-screenshots.mjs",
+    "verify": "npm run build && npm run verify:foundation && npm run verify:traversal && npm run verify:golf && npm run verify:environment && npm run verify:first-playable && npm run verify:ambient"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "playwright": "^1.61.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  }
+}

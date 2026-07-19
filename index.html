@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A browser rendering laboratory for a living pencil-and-ink golf landscape."
+    />
+    <title>Golf Exploration — Illustration Laboratory</title>
+  </head>
+  <body>
+    <main id="app" aria-label="Living golf illustration">
+      <canvas id="world" aria-label="Procedural illustrated golf landscape"></canvas>
+      <div id="paper-grain" aria-hidden="true"></div>
+      <div id="loading" role="status" aria-live="polite">Drawing the course…</div>
+      <output id="diagnostics" hidden></output>
+      <section id="pause-panel" class="pause-panel" aria-labelledby="pause-title" hidden>
+        <div class="pause-sheet">
+          <h1 id="pause-title">The course is resting</h1>
+          <p>Hold or drag on the landscape to walk. Press E near a ball or cart. In stance, drag and release to swing. Hold B to place a ball.</p>
+          <fieldset>
+            <legend>Accessibility</legend>
+            <label><input id="setting-contrast" type="checkbox" /> Higher contrast drawing</label>
+            <label><input id="setting-ball-size" type="checkbox" /> Larger golf balls</label>
+            <label><input id="setting-reduced-motion" type="checkbox" /> Reduced environmental motion</label>
+            <label><input id="setting-sound" type="checkbox" /> Stronger physical sound cues</label>
+          </fieldset>
+          <button id="resume-button" type="button">Return to the course</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
