@@ -69,6 +69,24 @@ async function capture(page, name) {
   process.stdout.write(`captured ${name}\n`);
 }
 
+async function captureGolferDetail(page, name) {
+  const viewport = page.viewportSize();
+  if (!viewport) return;
+  const size = Math.min(180, viewport.width, viewport.height);
+  await page.screenshot({
+    path: new URL(`${name}.png`, outputDirectory).pathname,
+    animations: 'disabled',
+    clip: {
+      x: Math.max(0, viewport.width * 0.5 - size * 0.5),
+      y: Math.max(0, viewport.height * 0.5 - size * 0.5),
+      width: size,
+      height: size,
+    },
+    timeout: 60_000,
+  });
+  process.stdout.write(`captured ${name}\n`);
+}
+
 async function advanceUntil(page, eventType, maxSeconds = 5) {
   const steps = Math.ceil(maxSeconds / 0.05);
   for (let index = 0; index < steps; index += 1) {
@@ -111,6 +129,7 @@ async function verifyContinuousProperty(page) {
     throw new Error('Fixed golfer-centered camera contract changed during property traversal.');
   }
   if (foundation.activeChunks !== foundation.renderedChunks
+      || foundation.activeChunks !== foundation.renderedGrassChunks
       || foundation.activeChunks !== foundation.streamedColliders
       || foundation.totalColliders !== foundation.streamedColliders + 4) {
     throw new Error(`Stream consumer counts disagree: ${JSON.stringify(foundation)}`);
@@ -167,6 +186,9 @@ async function verifyEmbodiedTraversal(page) {
   if (walkedDistance < 4.5 || walked.traversal.mode !== 'walking') {
     throw new Error(`Golfer traversal failed: ${JSON.stringify(walked.traversal)}`);
   }
+  if (walked.environment.surfaceInteractions < 1) {
+    throw new Error('Embodied walking did not reach the reactive grass field.');
+  }
   if (!arraysClose(initialOffset, walkedOffset)
       || !arraysClose(initial.camera.quaternion, walked.camera.quaternion)) {
     throw new Error('Camera contract changed during embodied walking.');
@@ -204,6 +226,15 @@ async function verifyEmbodiedTraversal(page) {
   if (cartDistance < 30 || driven.traversal.mode !== 'driving') {
     throw new Error(`Cart traversal failed: ${JSON.stringify(driven.traversal)}`);
   }
+  const cartDirection = [
+    (driven.traversal.cart[0] - cartStart[0]) / cartDistance,
+    (driven.traversal.cart[2] - cartStart[2]) / cartDistance,
+  ];
+  const cartForwardDot = cartDirection[0] * driven.traversal.cartVisualForward[0]
+    + cartDirection[1] * driven.traversal.cartVisualForward[2];
+  if (cartForwardDot < 0.96) {
+    throw new Error(`Cart visual long axis is not aligned with travel: ${cartForwardDot}.`);
+  }
   if (driven.foundation.primaryChunk === chunkStart
       || driven.foundation.activeChunks !== driven.foundation.renderedChunks
       || driven.foundation.activeChunks !== driven.foundation.streamedColliders) {
@@ -211,6 +242,7 @@ async function verifyEmbodiedTraversal(page) {
   }
   await page.evaluate(() => document.querySelector('canvas').getContext('webgl2').finish());
   await capture(page, '18-cart-traversal-and-tracks');
+  await captureGolferDetail(page, '18-cart-driver-detail');
   await page.evaluate(() => window.__STYLE_LAB__.interact());
   const exited = await page.evaluate(() => window.__STYLE_LAB__.state());
   if (exited.traversal.mode !== 'walking') throw new Error('Safe cart exit failed.');
@@ -220,6 +252,7 @@ async function verifyEmbodiedTraversal(page) {
     walkedDistance,
     shorelineSurface: shoreline.traversal.surface,
     cartDistance,
+    cartForwardDot,
     streamedChunk: driven.foundation.primaryChunk,
     exitMode: exited.traversal.mode,
   }, null, 2)}\n`);
@@ -229,30 +262,112 @@ async function verifyEmbodiedGolf(page) {
   await page.evaluate(() => {
     window.__STYLE_LAB__.focus('tee');
     window.__STYLE_LAB__.interact();
+    window.__STYLE_LAB__.simulate(3);
   });
   const stance = await page.evaluate(() => window.__STYLE_LAB__.state());
-  if (stance.traversal.mode !== 'stance' || !stance.traversal.addressedBallId) {
+  if (stance.traversal.mode !== 'stance'
+      || stance.traversal.swingPhase !== 'ready'
+      || !stance.traversal.addressedBallId) {
     throw new Error(`Stance entry failed: ${JSON.stringify(stance.traversal)}`);
+  }
+  const bodyForward = [
+    Math.sin(stance.traversal.golferHeading),
+    Math.cos(stance.traversal.golferHeading),
+  ];
+  const shotForward = [
+    Math.sin(stance.traversal.swingShotHeading),
+    Math.cos(stance.traversal.swingShotHeading),
+  ];
+  const bodyShotDot = Math.abs(bodyForward[0] * shotForward[0] + bodyForward[1] * shotForward[1]);
+  const clubBallDistance = Math.hypot(
+    stance.traversal.clubHead[0] - stance.ball[0],
+    stance.traversal.clubHead[2] - stance.ball[2],
+  );
+  if (bodyShotDot > 0.12 || clubBallDistance > 0.46) {
+    throw new Error(`Address geometry is not side-on at the ball: ${JSON.stringify({ bodyShotDot, clubBallDistance })}`);
   }
   await page.evaluate(() => document.querySelector('canvas').getContext('webgl2').finish());
   await capture(page, '19-ball-address-and-stance');
+  await captureGolferDetail(page, '19a-address-detail');
+
+  await page.keyboard.down('a');
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(10));
+  await page.keyboard.up('a');
+  const boundedAlignment = await page.evaluate(() => window.__STYLE_LAB__.state());
+  const alignmentDelta = Math.atan2(
+    Math.sin(boundedAlignment.traversal.swingShotHeading - stance.traversal.swingShotHeading),
+    Math.cos(boundedAlignment.traversal.swingShotHeading - stance.traversal.swingShotHeading),
+  );
+  if (Math.abs(alignmentDelta) > 0.181 || Math.abs(alignmentDelta) < 0.17) {
+    throw new Error(`Keyboard stance alignment was not bounded: ${alignmentDelta}.`);
+  }
+  await page.keyboard.down('d');
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0.33));
+  await page.keyboard.up('d');
+
+  // A cancelled pull must return to address and must never launch a ball.
+  const eventsBeforeCancel = stance.eventTypes.length;
+  await page.mouse.move(480, 320);
+  await page.mouse.down();
+  await page.mouse.move(510, 440, { steps: 5 });
+  await page.dispatchEvent('canvas', 'pointercancel', { pointerId: 1, bubbles: true });
+  await page.mouse.up();
+  const cancelled = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (cancelled.traversal.swingPhase !== 'ready'
+      || cancelled.eventTypes.slice(eventsBeforeCancel).includes('launched')) {
+    throw new Error(`Cancelled swing committed gameplay: ${JSON.stringify(cancelled.traversal)}`);
+  }
 
   await page.mouse.move(480, 320);
   await page.mouse.down();
   await page.mouse.move(535, 515, { steps: 8 });
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0));
+  const backswing = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (backswing.traversal.swingPhase !== 'backswing' || backswing.traversal.swingPower < 0.25) {
+    throw new Error(`Backswing presentation failed: ${JSON.stringify(backswing.traversal)}`);
+  }
+  await capture(page, '19b-visible-backswing');
+  await captureGolferDetail(page, '19b-backswing-detail');
   await page.mouse.up();
+  const released = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (released.traversal.swingPhase !== 'downswing' || released.eventTypes.includes('launched')) {
+    throw new Error(`Release was not a delayed downswing: ${JSON.stringify(released.traversal)}`);
+  }
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0.12));
+  const preImpact = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (preImpact.eventTypes.includes('launched')) {
+    throw new Error('Ball launched before the named club-impact frame.');
+  }
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0.07));
   const impact = await page.evaluate(() => window.__STYLE_LAB__.state());
-  if (impact.traversal.mode !== 'walking'
+  if (impact.traversal.mode !== 'stance'
       || !impact.golfEventTypes.some((event) => event.startsWith('club-impact:'))
       || !impact.eventTypes.includes('launched')) {
     throw new Error(`Drag/release swing failed: ${JSON.stringify(impact)}`);
   }
+  await capture(page, '19c-club-impact');
+  await captureGolferDetail(page, '19c-impact-detail');
   if (!arraysClose(impact.camera.quaternion, stance.camera.quaternion)
       || impact.camera.zoom !== stance.camera.zoom) {
     throw new Error('Camera changed during embodied swing.');
   }
 
-  await page.evaluate(() => window.__STYLE_LAB__.simulate(8));
+  // Capture the held, readable finish rather than the first transitional
+  // frame immediately after the downswing crosses into follow-through.
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0.38));
+  const followThrough = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (followThrough.traversal.swingPhase !== 'follow-through') {
+    throw new Error(`Follow-through did not remain visible: ${followThrough.traversal.swingPhase}.`);
+  }
+  await capture(page, '19d-follow-through');
+  await captureGolferDetail(page, '19d-follow-through-detail');
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(1.2));
+  const recovered = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (recovered.traversal.mode !== 'walking' || recovered.traversal.swingPhase !== 'idle') {
+    throw new Error(`Swing did not recover to traversal: ${JSON.stringify(recovered.traversal)}`);
+  }
+
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(6.4));
   const offscreen = await page.evaluate(() => window.__STYLE_LAB__.state());
   const ballDistance = Math.hypot(
     offscreen.ball[0] - offscreen.golfer[0],
@@ -301,6 +416,10 @@ async function verifyEmbodiedGolf(page) {
   process.stdout.write(`${JSON.stringify({
     stage3: 'passed',
     addressedBall: stance.traversal.addressedBallId,
+    bodyShotDot,
+    clubBallDistance,
+    cancelledSwingSafe: true,
+    boundedAlignment: alignmentDelta,
     offscreenBallDistance: ballDistance,
     rediscoveryDistance,
     persistentBalls: restored.traversal.balls,
@@ -323,12 +442,14 @@ async function verifyLivingResponse(page) {
   await page.evaluate(() => {
     window.__STYLE_LAB__.focus('tee');
     window.__STYLE_LAB__.interact();
+    window.__STYLE_LAB__.simulate(3);
   });
   await page.mouse.move(480, 320);
   await page.mouse.down();
   await page.mouse.move(525, 540, { steps: 8 });
   await page.mouse.up();
-  await page.evaluate(() => window.__STYLE_LAB__.simulate(5));
+  await advanceUntil(page, 'terrain-impact', 9);
+  await page.evaluate(() => window.__STYLE_LAB__.simulate(0.45));
   await page.waitForTimeout(80);
   const response = await page.evaluate(() => window.__STYLE_LAB__.state());
   const types = response.environment.traceTypes;
@@ -386,7 +507,10 @@ async function verifyFirstPlayable(page) {
     window.__STYLE_LAB__.captureMode(false);
     window.__STYLE_LAB__.focus('tee');
   });
-  await page.waitForTimeout(1800);
+  await page.waitForFunction(
+    () => window.__STYLE_LAB__.state().performance.fps > 0,
+    { timeout: 10_000 },
+  );
   const mobile = await page.evaluate(() => ({
     state: window.__STYLE_LAB__.state(),
     pauseHidden: document.querySelector('#pause-panel').hidden,
@@ -474,12 +598,29 @@ async function verifyDeniedStorage() {
 }
 
 async function verifyAmbientBreadth(page) {
+  const beforeReaction = await page.evaluate(() => {
+    window.__STYLE_LAB__.focus('tee');
+    return window.__STYLE_LAB__.state().environment.airborneBirds;
+  });
+  await page.evaluate(() => {
+    window.__STYLE_LAB__.setMoveTarget(13, -47);
+    window.__STYLE_LAB__.simulate(4.5);
+    window.__STYLE_LAB__.releaseMove();
+  });
+  const reacted = await page.evaluate(() => window.__STYLE_LAB__.state());
+  if (reacted.environment.airborneBirds < beforeReaction + 4) {
+    throw new Error(`Nearby flock did not react to the golfer: ${JSON.stringify(reacted.environment)}.`);
+  }
+  await capture(page, '24a-flock-reacts-to-golfer');
+
   await page.evaluate(() => {
     window.__STYLE_LAB__.focus('hill');
     for (let index = 0; index < 7; index += 1) window.__STYLE_LAB__.simulate(20);
   });
   const breeze = await page.evaluate(() => window.__STYLE_LAB__.state());
-  if (breeze.environment.ambientBirds !== 6
+  if (breeze.environment.ambientBirds < 12
+      || breeze.environment.ambientFlocks < 3
+      || breeze.environment.airborneBirds < 4
       || breeze.environment.weather !== 'breeze'
       || Math.hypot(...breeze.environment.wind) < 0.5) {
     throw new Error(`Shared ambient environment failed: ${JSON.stringify(breeze.environment)}`);
@@ -502,7 +643,10 @@ async function verifyAmbientBreadth(page) {
   }
   process.stdout.write(`${JSON.stringify({
     stage6: 'passed',
+    reactiveTakeoffBirds: reacted.environment.airborneBirds - beforeReaction,
     ambientBirds: breeze.environment.ambientBirds,
+    ambientFlocks: breeze.environment.ambientFlocks,
+    airborneBirds: breeze.environment.airborneBirds,
     breezeWind: breeze.environment.wind,
     weatherSequence: [breeze.environment.weather, overcast.weather],
     normalPlayRemainsWorldOnly: true,
@@ -603,10 +747,11 @@ try {
   await desktop.evaluate(() => window.__STYLE_LAB__.focus('water'));
   await desktop.waitForTimeout(80);
   if (extendedReview) await capture(desktop, '14-water-phone-portrait');
+  // Reuse the proven WebGL page for the final persistence/foundation gate.
+  // Opening a second software-rendered page after the extended gallery can
+  // exhaust Chromium's SwiftShader context even though the game is healthy.
+  await verifyContinuousProperty(desktop);
   await desktop.close();
-  const foundationPage = await openLab({ width: 1000, height: 625 });
-  await verifyContinuousProperty(foundationPage);
-  await foundationPage.close();
   }
   }
 } finally {

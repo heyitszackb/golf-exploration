@@ -12,18 +12,25 @@ import { POND_WATER_LEVEL, type CourseSurface } from './world/course';
 import { propertyField } from './world/property-field';
 import { PROPERTY_BLUEPRINT, PROPERTY_SCHEMA_ID } from './world/property-blueprint';
 import { PropertyChunkStreamer } from './world/property-streamer';
-import { GolferController, type GolferTraversalResult } from './simulation/golfer-controller';
+import {
+  GolferController,
+  type GolferTraversalResult,
+  type LocomotionEvent,
+} from './simulation/golfer-controller';
 import { CartController, type CartTraversalResult } from './simulation/cart-controller';
 import { TraceJournal, type NewTraceEvent } from './world/trace-journal';
 import { WorldAudio } from './audio/world-audio';
+import { WorldEventBus } from './core/world-events';
+import { ART_LIMITS, ART_PALETTE } from './render/art-style';
+import { IllustrationLighting } from './render/illustration-lighting';
+import { SwingSequence, type SwingPhase } from './simulation/swing-sequence';
 import {
   SessionStore,
   type WorldSessionV1,
 } from './persistence/session-store';
 
-const CAMERA_VERTICAL_SPAN = 56;
+const CAMERA_VERTICAL_SPAN = 36;
 const CAMERA_OFFSET = new THREE.Vector3(27, 104, -62);
-const MAX_PIXEL_RATIO = 1.65;
 
 type LabFocus = 'tee' | 'hill' | 'water' | 'green' | 'bank' | 'property';
 
@@ -77,6 +84,7 @@ interface StyleLabApi {
       activeChunks: number;
       activeChunkKeys: readonly string[];
       renderedChunks: number;
+      renderedGrassChunks: number;
       rapierVersion: string;
       streamedColliders: number;
       totalColliders: number;
@@ -90,12 +98,19 @@ interface StyleLabApi {
       speed: number;
       surface: string;
       blocked: boolean;
+      golferHeading: number;
       cart: number[];
       cartHeading: number;
       cursorTarget: number[] | null;
       balls: number;
       addressedBallId: string | null;
       swingPower: number;
+      swingPhase: SwingPhase;
+      swingProgress: number;
+      swingShotHeading: number;
+      swingBodyHeading: number;
+      cartVisualForward: number[];
+      clubHead: number[];
     };
     environment: {
       paused: boolean;
@@ -109,6 +124,9 @@ interface StyleLabApi {
       weatherIntensity: number;
       wind: number[];
       ambientBirds: number;
+      ambientFlocks: number;
+      airborneBirds: number;
+      surfaceInteractions: number;
     };
     performance: PerformanceStats;
   };
@@ -143,15 +161,19 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
-renderer.setClearColor(0xe1caa3, 1);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.setClearColor(ART_PALETTE.paper, 1);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, ART_LIMITS.maximumDevicePixelRatio));
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xe1caa3);
-const environmentPaperColor = new THREE.Color(0xe1caa3);
+scene.background = new THREE.Color(ART_PALETTE.paper);
+const environmentPaperColor = new THREE.Color(ART_PALETTE.paper);
 
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 520);
 const cameraTarget = new THREE.Vector3();
+const audioForward = new THREE.Vector3();
+const audioUp = new THREE.Vector3();
 const fixedCameraQuaternion = new THREE.Quaternion();
 {
   // Cameras look down local -Z; using a generic Object3D here would point the
@@ -165,6 +187,8 @@ const fixedCameraQuaternion = new THREE.Quaternion();
 const streamer = new PropertyChunkStreamer();
 const world = new IllustratedWorld(streamer);
 scene.add(world.root);
+const lighting = new IllustrationLighting();
+scene.add(lighting.root);
 
 loading.textContent = 'Surveying the property…';
 const sessionStore = new SessionStore();
@@ -186,6 +210,9 @@ propertyPhysics.createKinematicAgent('cart', world.cart.position, {
   maxSlopeRadians: Math.PI * 0.19,
 });
 const worldAudio = new WorldAudio();
+const worldEvents = new WorldEventBus();
+worldEvents.subscribe((event) => world.handleWorldEvent(event));
+worldEvents.subscribe((event) => worldAudio.handleWorldEvent(event));
 
 function mapSurface(surface: CourseSurface): BallSurface {
   switch (surface) {
@@ -210,7 +237,7 @@ const terrainQuery = {
 };
 
 const recentEvents: BallEvent[] = [];
-let lastMarkedImpactTime = -10;
+const lastMarkedImpactTimeByBall = new Map<string, number>();
 const simulation = new GolfBallSimulation(terrainQuery, {
   initialPosition: new THREE.Vector3(0.42, propertyField.heightAt(0.42, -60.9), -60.9),
   onEvent: handleBallEvent,
@@ -220,33 +247,41 @@ world.bindPrimaryBall(simulation.id);
 let addressedBall: GolfBallSimulation | null = null;
 let swingPower = 0;
 let swingPointerStart: Readonly<{ x: number; y: number }> | null = null;
-let swingStartHeading = 0;
+let stanceTarget: THREE.Vector3 | null = null;
+const swingSequence = new SwingSequence();
 const golfDomainEvents: string[] = [];
 
 const locomotionEvents: string[] = [];
+const pendingFootsteps: Array<{ event: LocomotionEvent; surface: CourseSurface }> = [];
 const traceJournal = new TraceJournal();
 function recordTrace(event: NewTraceEvent): void {
   traceJournal.add(event);
 }
 const golferController = new GolferController(propertyPhysics, (event, surface) => {
-  locomotionEvents.push(`${event}:${surface}`);
-  if (locomotionEvents.length > 24) locomotionEvents.shift();
-  const position = world.golfer.position.clone();
-  const strength = surface === 'bunker' ? 0.95 : surface === 'deepRough' ? 0.42 : 0.62;
-  recordTrace({
-    type: 'footprint',
-    x: position.x,
-    y: propertyField.heightAt(position.x, position.z),
-    z: position.z,
-    directionX: Math.sin(world.golfer.rotation.y),
-    directionZ: Math.cos(world.golfer.rotation.y),
-    scale: 0.24,
-    strength,
-    lifetime: 'session',
-  });
-  world.addFootprint(position, world.golfer.rotation.y, strength);
-  worldAudio.footstep(surface, position, strength);
+  pendingFootsteps.push({ event, surface });
 });
+
+function flushFootsteps(): void {
+  for (const { event, surface } of pendingFootsteps.splice(0)) {
+    locomotionEvents.push(`${event}:${surface}`);
+    if (locomotionEvents.length > 24) locomotionEvents.shift();
+    const position = world.golfer.position.clone();
+    const strength = surface === 'bunker' ? 0.95 : surface === 'deepRough' ? 0.42 : 0.62;
+    recordTrace({
+      type: 'footprint',
+      x: position.x,
+      y: propertyField.heightAt(position.x, position.z),
+      z: position.z,
+      directionX: Math.sin(world.golfer.rotation.y),
+      directionZ: Math.cos(world.golfer.rotation.y),
+      scale: 0.24,
+      strength,
+      lifetime: 'session',
+    });
+    world.addFootprint(position, world.golfer.rotation.y, strength);
+    worldEvents.emit({ type: 'footstep', position, surface, strength });
+  }
+}
 const cartController = new CartController(propertyPhysics);
 let playerMode: 'walking' | 'driving' | 'stance' = 'walking';
 let pointerTarget: Readonly<{ x: number; z: number }> | null = null;
@@ -259,6 +294,7 @@ let golferTraversal: GolferTraversalResult = {
   z: world.golfer.position.z,
   heading: world.golfer.rotation.y,
   speed: 0,
+  stridePhase: 0,
   surface: propertyField.sample(world.golfer.position.x, world.golfer.position.z).surface,
   slopeRadians: 0,
   grounded: true,
@@ -275,6 +311,8 @@ let cartTraversal: CartTraversalResult = {
   surface: propertyField.sample(world.cart.position.x, world.cart.position.z).surface,
   blocked: false,
 };
+const traversalNormal = new THREE.Vector3(0, 1, 0);
+const cartPreviousPosition = new THREE.Vector3();
 
 let currentFocus: LabFocus = 'tee';
 let diagnosticsVisible = false;
@@ -300,6 +338,8 @@ const movementCodes = new Set([
   'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight',
   'ShiftLeft', 'ShiftRight',
 ]);
+const debugControlsEnabled = import.meta.env.DEV
+  && new URLSearchParams(window.location.search).has('debug');
 let performanceStats: PerformanceStats = {
   fps: 0,
   frameMs: 0,
@@ -372,10 +412,38 @@ function handleBallEvent(event: BallEvent): void {
   recentEvents.push(event);
   if (recentEvents.length > 32) recentEvents.shift();
 
+  if (event.type === 'launched') {
+    worldEvents.emit({
+      type: 'ball-launched',
+      ballId: event.ballId,
+      position: event.position,
+      strength: THREE.MathUtils.clamp(event.velocity.length() / 55, 0.1, 1),
+    });
+    return;
+  }
+
   if (event.type === 'came-to-rest') scheduleSave(120);
 
   if (event.type === 'water-entered') {
-    worldAudio.impact('water', event.position, event.intensity);
+    worldEvents.emit({
+      type: 'water-splashed',
+      ballId: event.ballId,
+      position: event.position,
+      strength: event.intensity,
+    });
+    const markPosition = event.position.clone();
+    markPosition.y = event.waterLevel;
+    world.addImpact('water', markPosition);
+    return;
+  }
+
+  if (event.type === 'water-skipped') {
+    worldEvents.emit({
+      type: 'water-splashed',
+      ballId: event.ballId,
+      position: event.position,
+      strength: event.intensity * 0.65,
+    });
     const markPosition = event.position.clone();
     markPosition.y = event.waterLevel;
     world.addImpact('water', markPosition);
@@ -383,13 +451,17 @@ function handleBallEvent(event: BallEvent): void {
   }
 
   if (event.type !== 'terrain-impact' || event.impactSpeed < 0.72) return;
-  worldAudio.impact(
-    event.surface === 'sand' ? 'sand' : 'grass',
-    event.position,
-    THREE.MathUtils.clamp(event.impactSpeed / 10, 0.12, 1),
-  );
+  const landedSurface = propertyField.sample(event.position.x, event.position.z).surface;
+  worldEvents.emit({
+    type: 'ball-landed',
+    ballId: event.ballId,
+    position: event.position,
+    surface: landedSurface,
+    strength: THREE.MathUtils.clamp(event.impactSpeed / 10, 0.12, 1),
+  });
+  const lastMarkedImpactTime = lastMarkedImpactTimeByBall.get(event.ballId) ?? Number.NEGATIVE_INFINITY;
   if (event.time - lastMarkedImpactTime < 0.19) return;
-  lastMarkedImpactTime = event.time;
+  lastMarkedImpactTimeByBall.set(event.ballId, event.time);
   const markPosition = event.position.clone();
   const sample = propertyField.sample(markPosition.x, markPosition.z);
   markPosition.y = sample.surface === 'water' ? POND_WATER_LEVEL : sample.height;
@@ -416,7 +488,10 @@ function updateCamera(): void {
   camera.position.copy(cameraTarget).add(CAMERA_OFFSET);
   camera.quaternion.copy(fixedCameraQuaternion);
   camera.updateMatrixWorld();
-  worldAudio.setListener(world.golfer.position);
+  lighting.update(cameraTarget);
+  camera.getWorldDirection(audioForward);
+  audioUp.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+  worldAudio.setListener(world.golfer.position, audioForward, audioUp);
 }
 
 function updateStreaming(): void {
@@ -449,8 +524,11 @@ function resize(): void {
   camera.top = CAMERA_VERTICAL_SPAN / 2;
   camera.bottom = -CAMERA_VERTICAL_SPAN / 2;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, ART_LIMITS.maximumDevicePixelRatio));
   renderer.setSize(width, height, false);
+  // Resizing clears WebGL's drawing buffer. Render immediately so a paused or
+  // deterministic capture frame never presents an empty sheet of paper.
+  renderer.render(scene, camera);
 }
 
 function syncBallVisual(ball: GolfBallSimulation, trace = ball === addressedBall || ball === simulation): void {
@@ -466,6 +544,13 @@ function syncBallVisual(ball: GolfBallSimulation, trace = ball === addressedBall
     !ball.submerged || ball.position.y >= waterLevel - 0.5,
     trace,
   );
+  worldEvents.emit({
+    type: 'ball-moved',
+    ballId: ball.id,
+    position: ball.position,
+    speed: ball.velocity.length(),
+    clearance: Math.max(0, ball.position.y - (sample.surface === 'water' ? waterLevel : sample.height)),
+  });
 }
 
 function syncBallVisuals(): void {
@@ -475,7 +560,7 @@ function syncBallVisuals(): void {
 function syncEnvironment(): void {
   const environment = world.environmentState;
   for (const ball of balls) ball.wind.set(environment.windX, 0, environment.windZ);
-  environmentPaperColor.setHex(0xe1caa3).offsetHSL(0, 0, environment.paperTone);
+  environmentPaperColor.setHex(ART_PALETTE.paper).offsetHSL(0, 0, environment.paperTone);
   scene.background = environmentPaperColor;
   renderer.setClearColor(environmentPaperColor, 1);
 }
@@ -578,28 +663,64 @@ function enterStance(ball: GolfBallSimulation): void {
   const toBallZ = ball.position.z - world.golfer.position.z;
   const distance = Math.hypot(toBallX, toBallZ);
   if (distance > 2.6 || distance < 0.001) return;
+
+  const shotHeading = Math.atan2(toBallX, toBallZ);
+  const rightX = Math.cos(shotHeading);
+  const rightZ = -Math.sin(shotHeading);
+  const candidates = [
+    {
+      x: ball.position.x + rightX * 0.72,
+      z: ball.position.z + rightZ * 0.72,
+      bodyHeading: shotHeading - Math.PI / 2,
+    },
+    {
+      x: ball.position.x - rightX * 0.72,
+      z: ball.position.z - rightZ * 0.72,
+      bodyHeading: shotHeading + Math.PI / 2,
+    },
+  ].filter((candidate) => {
+    const sample = propertyField.sample(candidate.x, candidate.z);
+    return sample.surface !== 'water' && sample.surface !== 'cliff';
+  }).sort((left, right) => (
+    Math.hypot(left.x - world.golfer.position.x, left.z - world.golfer.position.z)
+      - Math.hypot(right.x - world.golfer.position.x, right.z - world.golfer.position.z)
+  ));
+  const candidate = candidates[0];
+  if (!candidate) return;
+
   addressedBall = ball;
   playerMode = 'stance';
   pointerTarget = null;
   swingPower = 0;
-  world.golfer.rotation.y = Math.atan2(toBallX, toBallZ);
+  stanceTarget = new THREE.Vector3(
+    candidate.x,
+    propertyField.heightAt(candidate.x, candidate.z),
+    candidate.z,
+  );
+  swingSequence.beginAddress(shotHeading, candidate.bodyHeading);
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
   golfDomainEvents.push(`stance-entered:${ball.id}`);
   if (golfDomainEvents.length > 32) golfDomainEvents.shift();
 }
 
 function leaveStance(): void {
   if (playerMode !== 'stance') return;
+  cancelPointerInput();
   playerMode = 'walking';
   swingPointerStart = null;
   swingPower = 0;
+  stanceTarget = null;
+  swingSequence.cancel();
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
 }
 
-function strikeAddressedBall(): void {
-  if (playerMode !== 'stance' || !addressedBall || swingPower < 0.12) return;
+function performClubImpact(): void {
+  const swing = swingSequence.snapshot();
+  if (playerMode !== 'stance' || !addressedBall || swing.power < 0.075) return;
   const direction = new THREE.Vector3(
-    Math.sin(world.golfer.rotation.y),
+    Math.sin(swing.shotHeading),
     0,
-    Math.cos(world.golfer.rotation.y),
+    Math.cos(swing.shotHeading),
   );
   golfDomainEvents.push(`club-impact:${addressedBall.id}`);
   if (golfDomainEvents.length > 32) golfDomainEvents.shift();
@@ -616,19 +737,20 @@ function strikeAddressedBall(): void {
     directionX: direction.x,
     directionZ: direction.z,
     scale: 0.45,
-    strength: swingPower,
+    strength: swing.power,
     lifetime: 'session',
   });
-  world.addDivot(divotPosition, world.golfer.rotation.y, swingPower);
-  worldAudio.clubSwing(world.golfer.position, swingPower);
-  worldAudio.impact('club', addressedBall.position, swingPower);
+  world.addDivot(divotPosition, swing.shotHeading, swing.power);
+  worldEvents.emit({
+    type: 'club-impact',
+    ballId: addressedBall.id,
+    position: addressedBall.position,
+    strength: swing.power,
+  });
   addressedBall.launchPreset('fairway', direction, {
-    power: THREE.MathUtils.lerp(0.22, 1.05, swingPower),
+    power: THREE.MathUtils.lerp(0.22, 1.05, swing.power),
   });
   syncBallVisual(addressedBall, true);
-  playerMode = 'walking';
-  swingPointerStart = null;
-  swingPower = 0;
   scheduleSave(120);
 }
 
@@ -653,6 +775,11 @@ function checkCupCaptures(): void {
 }
 
 function focus(area: LabFocus): void {
+  cancelPointerInput();
+  swingSequence.cancel();
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
+  stanceTarget = null;
+  swingPower = 0;
   playerMode = 'walking';
   world.golfer.setSeated(false);
   pointerTarget = null;
@@ -685,7 +812,7 @@ function launchToward(
   simulation.place(origin);
   world.clearInteractions();
   recentEvents.length = 0;
-  lastMarkedImpactTime = -10;
+  lastMarkedImpactTimeByBall.clear();
   const direction = new THREE.Vector3(targetX - origin.x, 0, targetZ - origin.z).normalize();
   simulation.launchPreset(preset, direction, { power });
   syncBallVisual(simulation);
@@ -706,7 +833,7 @@ function shoot(preset: ShotPresetName = 'fairway'): void {
       break;
     case 'bunker':
       currentFocus = 'hill';
-      launchToward('bunker', -3, -42, -14.1, -18.5, 0.73);
+      launchToward('bunker', -7, -32, -14.1, -18.5, 0.65);
       break;
     case 'water':
       currentFocus = 'water';
@@ -719,11 +846,16 @@ function reset(): void {
   world.clearInteractions();
   traceJournal.clear();
   recentEvents.length = 0;
-  lastMarkedImpactTime = -10;
+  lastMarkedImpactTimeByBall.clear();
   focus('tee');
 }
 
 function moveTo(x: number, z: number): void {
+  cancelPointerInput();
+  swingSequence.cancel();
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
+  stanceTarget = null;
+  swingPower = 0;
   playerMode = 'walking';
   world.golfer.setSeated(false);
   pointerTarget = null;
@@ -813,7 +945,20 @@ function updateTraversalStep(delta: number): void {
       golferTraversal.speed,
       golferTraversal.leftFootHeight - golferTraversal.y,
       golferTraversal.rightFootHeight - golferTraversal.y,
+      golferTraversal.stridePhase,
     );
+    flushFootsteps();
+    const groundSample = propertyField.sample(golferTraversal.x, golferTraversal.z);
+    traversalNormal.set(groundSample.normal.x, groundSample.normal.y, groundSample.normal.z);
+    world.golfer.setGroundNormal(traversalNormal);
+    if (golferTraversal.speed > 0.02) {
+      worldEvents.emit({
+        type: 'golfer-moved',
+        position: world.golfer.position,
+        speed: golferTraversal.speed,
+        surface: golferTraversal.surface,
+      });
+    }
     addressedBall = nearestActionableBall();
     if (addressedBall) {
       const ballHeading = Math.atan2(
@@ -837,6 +982,7 @@ function updateTraversalStep(delta: number): void {
         - (movementKeys.has('KeyD') || movementKeys.has('ArrowRight') ? 1 : 0),
       brake: movementKeys.has('Space'),
     };
+    cartPreviousPosition.copy(world.cart.position);
     cartTraversal = cartController.step(
       world.cart.position,
       world.cart.rotation.y,
@@ -845,6 +991,19 @@ function updateTraversalStep(delta: number): void {
     );
     world.cart.position.set(cartTraversal.x, cartTraversal.y, cartTraversal.z);
     world.cart.rotation.y = cartTraversal.heading;
+    const cartGround = propertyField.sample(cartTraversal.x, cartTraversal.z);
+    traversalNormal.set(cartGround.normal.x, cartGround.normal.y, cartGround.normal.z);
+    world.cart.setMotion(cartTraversal.speed, cartInput.steer, traversalNormal, delta);
+    if (Math.abs(cartTraversal.speed) > 0.02) {
+      worldEvents.emit({
+        type: 'cart-moved',
+        position: world.cart.position,
+        previous: cartPreviousPosition,
+        speed: cartTraversal.speed,
+        heading: cartTraversal.heading,
+        surface: cartTraversal.surface,
+      });
+    }
     if (world.cart.position.distanceToSquared(lastCartTrackPosition) > 0.32) {
       const trackDistance = world.cart.position.distanceTo(lastCartTrackPosition);
       world.addCartTrack(lastCartTrackPosition, world.cart.position, world.cart.rotation.y);
@@ -859,7 +1018,6 @@ function updateTraversalStep(delta: number): void {
         strength: cartTraversal.surface === 'bunker' ? 0.95 : 0.62,
         lifetime: 'session',
       });
-      worldAudio.impact('cart', world.cart.position, Math.min(1, Math.abs(cartTraversal.speed) / 8));
       lastCartTrackPosition.copy(world.cart.position);
     }
     world.golfer.position.copy(world.cart.position);
@@ -867,10 +1025,81 @@ function updateTraversalStep(delta: number): void {
     world.golfer.setLocomotion(0, 0, 0);
     world.golfer.setAttention(0, 0);
   } else {
-    const turn = (movementKeys.has('KeyA') || movementKeys.has('ArrowLeft') ? 1 : 0)
-      - (movementKeys.has('KeyD') || movementKeys.has('ArrowRight') ? 1 : 0);
-    world.golfer.rotation.y += turn * delta * 0.85;
-    world.golfer.setLocomotion(0, 0, 0);
+    let swing = swingSequence.snapshot();
+    if (swing.phase === 'addressing' && stanceTarget) {
+      golferTraversal = golferController.step(
+        world.golfer.position,
+        world.golfer.rotation.y,
+        stanceTarget,
+        delta,
+      );
+      world.golfer.position.set(golferTraversal.x, golferTraversal.y, golferTraversal.z);
+      world.golfer.rotation.y = golferTraversal.heading;
+      world.golfer.setLocomotion(
+        golferTraversal.speed,
+        golferTraversal.leftFootHeight - golferTraversal.y,
+        golferTraversal.rightFootHeight - golferTraversal.y,
+        golferTraversal.stridePhase,
+      );
+      flushFootsteps();
+      if (golferTraversal.speed > 0.02) {
+        worldEvents.emit({
+          type: 'golfer-moved',
+          position: world.golfer.position,
+          speed: golferTraversal.speed,
+          surface: golferTraversal.surface,
+        });
+      }
+      const remaining = Math.hypot(
+        stanceTarget.x - world.golfer.position.x,
+        stanceTarget.z - world.golfer.position.z,
+      );
+      if (remaining <= 0.075) {
+        const headingError = Math.atan2(
+          Math.sin(swing.bodyHeading - world.golfer.rotation.y),
+          Math.cos(swing.bodyHeading - world.golfer.rotation.y),
+        );
+        world.golfer.rotation.y += THREE.MathUtils.clamp(headingError, -delta * 4.8, delta * 4.8);
+        if (Math.abs(headingError) <= 0.045) {
+          world.golfer.position.copy(stanceTarget);
+          world.golfer.rotation.y = swing.bodyHeading;
+          golferController.teleport(world.golfer.position);
+          swingSequence.settle();
+          swing = swingSequence.snapshot();
+          worldEvents.emit({ type: 'stance-settled', position: world.golfer.position });
+          golfDomainEvents.push(`stance-settled:${addressedBall?.id ?? 'none'}`);
+          if (golfDomainEvents.length > 32) golfDomainEvents.shift();
+        }
+      }
+    } else {
+      if (swing.phase === 'ready') {
+        const turn = (movementKeys.has('KeyA') || movementKeys.has('ArrowLeft') ? 1 : 0)
+          - (movementKeys.has('KeyD') || movementKeys.has('ArrowRight') ? 1 : 0);
+        swingSequence.nudgeAlignment(turn * delta * 0.56);
+      }
+      for (const event of swingSequence.step(delta)) {
+        if (event === 'impact') performClubImpact();
+        else if (event === 'complete') {
+          golfDomainEvents.push(`swing-complete:${addressedBall?.id ?? 'none'}`);
+          if (golfDomainEvents.length > 32) golfDomainEvents.shift();
+          playerMode = 'walking';
+          stanceTarget = null;
+          swingPointerStart = null;
+          addressedBall = null;
+        }
+      }
+      swing = swingSequence.snapshot();
+      world.golfer.rotation.y = swing.phase === 'idle'
+        ? world.golfer.rotation.y
+        : swing.bodyHeading;
+      world.golfer.setLocomotion(0, 0, 0, golferTraversal.stridePhase);
+    }
+    const stanceGround = propertyField.sample(world.golfer.position.x, world.golfer.position.z);
+    traversalNormal.set(stanceGround.normal.x, stanceGround.normal.y, stanceGround.normal.z);
+    world.golfer.setGroundNormal(traversalNormal);
+    swing = swingSequence.snapshot();
+    swingPower = swing.power;
+    world.golfer.setSwingPresentation(swing);
     world.golfer.setAttention(0, 1);
   }
 
@@ -933,6 +1162,19 @@ function releaseMove(): void {
   pointerTarget = null;
 }
 
+function cancelPointerInput(): void {
+  const pointerId = activePointerId;
+  activePointerId = null;
+  pointerTarget = null;
+  swingPointerStart = null;
+  swingSequence.cancelGesture();
+  swingPower = swingSequence.snapshot().power;
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
+  if (pointerId !== null && canvas!.hasPointerCapture(pointerId)) {
+    canvas!.releasePointerCapture(pointerId);
+  }
+}
+
 function simulate(seconds: number): void {
   const safeSeconds = THREE.MathUtils.clamp(seconds, 0, 20);
   elapsed += safeSeconds;
@@ -966,6 +1208,7 @@ function applyAccessibilitySettings(): void {
   document.body.classList.toggle('high-contrast', accessibilitySettings.highContrast);
   world.setBallScale(accessibilitySettings.largerBalls ? 1.65 : 1);
   world.setReducedMotion(accessibilitySettings.reducedMotion);
+  lighting.setHighContrast(accessibilitySettings.highContrast);
   worldAudio.strongerCues = accessibilitySettings.strongerSound;
   contrastSetting!.checked = accessibilitySettings.highContrast;
   ballSizeSetting!.checked = accessibilitySettings.largerBalls;
@@ -977,7 +1220,7 @@ function setPaused(next: boolean): void {
   paused = next;
   pausePanel!.hidden = !paused;
   movementKeys.clear();
-  pointerTarget = null;
+  cancelPointerInput();
   previousTime = performance.now() / 1000;
   if (paused) {
     void saveSession();
@@ -1104,8 +1347,7 @@ document.addEventListener('visibilitychange', () => {
   previousTime = performance.now() / 1000;
   if (document.visibilityState === 'hidden') {
     movementKeys.clear();
-    pointerTarget = null;
-    activePointerId = null;
+    cancelPointerInput();
     void saveSession();
   }
 });
@@ -1124,10 +1366,11 @@ canvas.addEventListener('pointerdown', (event) => {
   void worldAudio.resume();
   if (event.button !== 0 || playerMode === 'driving') return;
   if (playerMode === 'stance') {
+    if (!swingSequence.beginGesture()) return;
     activePointerId = event.pointerId;
     swingPointerStart = { x: event.clientX, y: event.clientY };
-    swingStartHeading = world.golfer.rotation.y;
     swingPower = 0;
+    world.golfer.setSwingPresentation(swingSequence.snapshot());
     canvas.setPointerCapture(event.pointerId);
     event.preventDefault();
     return;
@@ -1145,32 +1388,56 @@ canvas.addEventListener('pointermove', (event) => {
     const bounds = canvas!.getBoundingClientRect();
     const deltaX = event.clientX - swingPointerStart.x;
     const deltaY = event.clientY - swingPointerStart.y;
-    swingPower = THREE.MathUtils.clamp(
-      Math.hypot(deltaX, deltaY) / Math.min(bounds.width, bounds.height) * 2.1,
-      0,
-      1,
+    swingSequence.updateGesture(
+      deltaX,
+      deltaY,
+      Math.min(bounds.width, bounds.height),
+      bounds.width,
     );
-    world.golfer.rotation.y = swingStartHeading + deltaX / bounds.width * 0.9;
+    const swing = swingSequence.snapshot();
+    swingPower = swing.power;
+    world.golfer.rotation.y = swing.bodyHeading;
+    world.golfer.setSwingPresentation(swing);
     return;
   }
   if (playerMode !== 'walking') return;
   const target = pointerGroundTarget(event.clientX, event.clientY);
   if (target) pointerTarget = target;
 });
-function endPointerMovement(event: PointerEvent): void {
+function endPointerMovement(event: PointerEvent, commitSwing: boolean): void {
   if (activePointerId !== event.pointerId) return;
-  const shouldStrike = playerMode === 'stance' && swingPointerStart !== null;
-  if (canvas!.hasPointerCapture(event.pointerId)) canvas!.releasePointerCapture(event.pointerId);
+  const wasSwingGesture = playerMode === 'stance' && swingPointerStart !== null;
   activePointerId = null;
+  swingPointerStart = null;
   pointerTarget = null;
-  if (shouldStrike) strikeAddressedBall();
+  if (canvas!.hasPointerCapture(event.pointerId)) canvas!.releasePointerCapture(event.pointerId);
+  if (!wasSwingGesture) return;
+  if (commitSwing && swingSequence.release()) {
+    const swing = swingSequence.snapshot();
+    swingPower = swing.power;
+    worldEvents.emit({
+      type: 'club-swing',
+      position: world.golfer.position,
+      strength: swing.power,
+    });
+    golfDomainEvents.push(`swing-committed:${addressedBall?.id ?? 'none'}`);
+    if (golfDomainEvents.length > 32) golfDomainEvents.shift();
+  } else {
+    swingSequence.cancelGesture();
+    swingPower = swingSequence.snapshot().power;
+  }
+  world.golfer.setSwingPresentation(swingSequence.snapshot());
 }
-canvas.addEventListener('pointerup', endPointerMovement);
-canvas.addEventListener('pointercancel', endPointerMovement);
+canvas.addEventListener('pointerup', (event) => endPointerMovement(event, true));
+canvas.addEventListener('pointercancel', (event) => endPointerMovement(event, false));
 canvas.addEventListener('lostpointercapture', (event) => {
   if (activePointerId === event.pointerId) {
     activePointerId = null;
     pointerTarget = null;
+    swingPointerStart = null;
+    swingSequence.cancelGesture();
+    swingPower = swingSequence.snapshot().power;
+    world.golfer.setSwingPresentation(swingSequence.snapshot());
   }
 });
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -1201,12 +1468,12 @@ window.addEventListener('keydown', (event) => {
     case 'Space':
       event.preventDefault();
       if (playerMode === 'driving') movementKeys.add('Space');
-      else shoot('fairway');
+      else interact();
       break;
-    case 'Digit1': shoot('fairway'); break;
-    case 'Digit2': shoot('bunker'); break;
-    case 'Digit3': shoot('water'); break;
-    case 'Digit4': shoot('green'); break;
+    case 'Digit1': if (debugControlsEnabled) shoot('fairway'); break;
+    case 'Digit2': if (debugControlsEnabled) shoot('bunker'); break;
+    case 'Digit3': if (debugControlsEnabled) shoot('water'); break;
+    case 'Digit4': if (debugControlsEnabled) shoot('green'); break;
     case 'KeyR': reset(); break;
     case 'KeyE': interact(); break;
     case 'KeyB':
@@ -1234,8 +1501,7 @@ window.addEventListener('keyup', (event) => {
 });
 window.addEventListener('blur', () => {
   movementKeys.clear();
-  pointerTarget = null;
-  activePointerId = null;
+  cancelPointerInput();
 });
 
 resize();
@@ -1289,6 +1555,7 @@ window.__STYLE_LAB__ = {
       activeChunks: streamer.activeChunks.length,
       activeChunkKeys: streamer.activeKeys,
       renderedChunks: world.streamedChunkCount,
+      renderedGrassChunks: world.streamedGrassChunkCount,
       rapierVersion: propertyPhysics.rapierVersion,
       streamedColliders: propertyPhysics.streamedColliderCount,
       totalColliders: propertyPhysics.totalColliderCount,
@@ -1302,12 +1569,19 @@ window.__STYLE_LAB__ = {
       speed: playerMode === 'walking' ? golferTraversal.speed : cartTraversal.speed,
       surface: playerMode === 'walking' ? golferTraversal.surface : cartTraversal.surface,
       blocked: playerMode === 'walking' ? golferTraversal.blocked : cartTraversal.blocked,
+      golferHeading: world.golfer.rotation.y,
       cart: world.cart.position.toArray(),
       cartHeading: world.cart.rotation.y,
       cursorTarget: pointerTarget ? [pointerTarget.x, pointerTarget.z] : null,
       balls: balls.length,
       addressedBallId: addressedBall?.id ?? null,
       swingPower,
+      swingPhase: swingSequence.phase,
+      swingProgress: swingSequence.snapshot().progress,
+      swingShotHeading: swingSequence.snapshot().shotHeading,
+      swingBodyHeading: swingSequence.snapshot().bodyHeading,
+      cartVisualForward: world.cart.getForward().toArray(),
+      clubHead: world.golfer.getClubHeadWorldPosition().toArray(),
     },
     environment: {
       paused,
@@ -1327,6 +1601,9 @@ window.__STYLE_LAB__ = {
       weatherIntensity: world.environmentState.intensity,
       wind: [world.environmentState.windX, world.environmentState.windZ],
       ambientBirds: world.ambientLife.count,
+      ambientFlocks: world.ambientLife.flockCount,
+      airborneBirds: world.ambientLife.airborneCount,
+      surfaceInteractions: world.activeSurfaceInteractionCount,
     },
     performance: { ...performanceStats },
   }),

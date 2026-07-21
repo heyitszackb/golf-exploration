@@ -127,8 +127,9 @@ export const BUNKERS: readonly OrganicRegion[] = Object.freeze([
     radiusX: 4.8,
     radiusZ: 8.1,
     harmonics: Object.freeze([
-      { frequency: 2, amplitude: 0.09, phase: 0.8 },
-      { frequency: 3, amplitude: 0.055, phase: -0.4 },
+      { frequency: 2, amplitude: 0.13, phase: 0.8 },
+      { frequency: 3, amplitude: 0.08, phase: -0.4 },
+      { frequency: 5, amplitude: 0.045, phase: 1.1 },
     ]),
   }),
   Object.freeze({
@@ -138,8 +139,9 @@ export const BUNKERS: readonly OrganicRegion[] = Object.freeze([
     radiusX: 5.2,
     radiusZ: 7.1,
     harmonics: Object.freeze([
-      { frequency: 2, amplitude: -0.08, phase: 0.2 },
-      { frequency: 4, amplitude: 0.045, phase: 1.25 },
+      { frequency: 2, amplitude: -0.12, phase: 0.2 },
+      { frequency: 3, amplitude: 0.05, phase: -0.7 },
+      { frequency: 4, amplitude: 0.075, phase: 1.25 },
     ]),
   }),
   Object.freeze({
@@ -149,8 +151,9 @@ export const BUNKERS: readonly OrganicRegion[] = Object.freeze([
     radiusX: 5.7,
     radiusZ: 4.5,
     harmonics: Object.freeze([
-      { frequency: 2, amplitude: 0.1, phase: -0.9 },
-      { frequency: 3, amplitude: 0.04, phase: 0.35 },
+      { frequency: 2, amplitude: 0.16, phase: -0.9 },
+      { frequency: 3, amplitude: 0.08, phase: 0.35 },
+      { frequency: 5, amplitude: -0.045, phase: 1.4 },
     ]),
   }),
   Object.freeze({
@@ -160,8 +163,9 @@ export const BUNKERS: readonly OrganicRegion[] = Object.freeze([
     radiusX: 4.6,
     radiusZ: 6.4,
     harmonics: Object.freeze([
-      { frequency: 2, amplitude: -0.075, phase: 0.4 },
-      { frequency: 5, amplitude: 0.035, phase: -0.5 },
+      { frequency: 2, amplitude: -0.13, phase: 0.4 },
+      { frequency: 3, amplitude: 0.05, phase: 0.95 },
+      { frequency: 5, amplitude: 0.07, phase: -0.5 },
     ]),
   }),
 ]);

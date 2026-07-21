@@ -11,13 +11,22 @@ interface AnimatedRipple {
 interface FadingMark {
   object: THREE.Object3D;
   materials: THREE.Material[];
+  baseOpacities: number[];
   age: number;
   lifetime: number;
+}
+
+interface BallTrail {
+  readonly positions: THREE.Vector3[];
+  readonly buffer: Float32Array;
+  readonly geometry: THREE.BufferGeometry;
+  readonly line: THREE.Line;
 }
 
 const MARK_COLOR = 0x746751;
 const MAX_TRAIL_POINTS = 18;
 const MAX_CART_TRACK_SEGMENTS = 384;
+const MAX_FADING_MARKS = 420;
 
 function irregularRing(radius: number, segments: number, seed: number): THREE.BufferGeometry {
   const points: THREE.Vector3[] = [];
@@ -42,21 +51,13 @@ export class InteractionMarks {
   readonly root = new THREE.Group();
   private readonly ripples: AnimatedRipple[] = [];
   private readonly fading: FadingMark[] = [];
-  private readonly trailPositions: THREE.Vector3[] = [];
-  private readonly trailGeometry = new THREE.BufferGeometry();
-  private readonly trailBuffer = new Float32Array(MAX_TRAIL_POINTS * 3);
-  private readonly trail: THREE.Line;
+  private readonly ballTrails = new Map<string, BallTrail>();
   private readonly cartTrackValues: number[] = [];
   private readonly cartTrackBuffer = new Float32Array(MAX_CART_TRACK_SEGMENTS * 2 * 3);
   private readonly cartTrackGeometry = new THREE.BufferGeometry();
 
   constructor() {
     this.root.name = 'interaction-marks';
-    this.trailGeometry.setAttribute('position', new THREE.BufferAttribute(this.trailBuffer, 3));
-    this.trailGeometry.setDrawRange(0, 0);
-    this.trail = new THREE.Line(this.trailGeometry, lineMaterial(0.24));
-    this.trail.frustumCulled = false;
-    this.root.add(this.trail);
     this.cartTrackGeometry.setAttribute('position', new THREE.BufferAttribute(this.cartTrackBuffer, 3));
     this.cartTrackGeometry.setDrawRange(0, 0);
     const cartTracks = new THREE.LineSegments(this.cartTrackGeometry, lineMaterial(0.16));
@@ -102,32 +103,44 @@ export class InteractionMarks {
     }
 
     this.root.add(group);
-    this.fading.push({ object: group, materials, age: 0, lifetime: kind === 'sand' ? 42 : 24 });
+    this.registerFading(group, materials, kind === 'sand' ? 42 : 24);
   }
 
-  updateTrail(position: THREE.Vector3, moving: boolean): void {
+  updateTrail(ballId: string, position: THREE.Vector3, moving: boolean): void {
+    const trail = this.ensureTrail(ballId);
+    if (!moving) {
+      trail.positions.length = 0;
+      trail.geometry.setDrawRange(0, 0);
+      return;
+    }
+
+    const last = trail.positions.at(-1);
+    if (last && last.distanceToSquared(position) > 16) trail.positions.length = 0;
     if (moving) {
-      const last = this.trailPositions.at(-1);
       if (!last || last.distanceToSquared(position) > 0.4) {
-        this.trailPositions.push(position.clone());
-        if (this.trailPositions.length > MAX_TRAIL_POINTS) this.trailPositions.shift();
+        trail.positions.push(position.clone());
+        if (trail.positions.length > MAX_TRAIL_POINTS) trail.positions.shift();
       }
     }
 
-    for (let index = 0; index < this.trailPositions.length; index += 1) {
-      const point = this.trailPositions[index]!;
+    for (let index = 0; index < trail.positions.length; index += 1) {
+      const point = trail.positions[index]!;
       const offset = index * 3;
-      this.trailBuffer[offset] = point.x;
-      this.trailBuffer[offset + 1] = point.y;
-      this.trailBuffer[offset + 2] = point.z;
+      trail.buffer[offset] = point.x;
+      trail.buffer[offset + 1] = point.y;
+      trail.buffer[offset + 2] = point.z;
     }
-    this.trailGeometry.setDrawRange(0, this.trailPositions.length);
-    this.trailGeometry.attributes.position!.needsUpdate = true;
+    trail.geometry.setDrawRange(0, trail.positions.length);
+    trail.geometry.attributes.position!.needsUpdate = true;
   }
 
-  clearTrail(): void {
-    this.trailPositions.length = 0;
-    this.trailGeometry.setDrawRange(0, 0);
+  clearTrail(ballId?: string): void {
+    const trails = ballId ? [this.ballTrails.get(ballId)].filter((trail): trail is BallTrail => Boolean(trail))
+      : [...this.ballTrails.values()];
+    for (const trail of trails) {
+      trail.positions.length = 0;
+      trail.geometry.setDrawRange(0, 0);
+    }
   }
 
   addCartTrack(from: THREE.Vector3, to: THREE.Vector3, heading: number): void {
@@ -158,7 +171,7 @@ export class InteractionMarks {
     mark.scale.z = 0.42;
     mark.rotation.y = heading;
     this.root.add(mark);
-    this.fading.push({ object: mark, materials: [material], age: 0, lifetime: 150 });
+    this.registerFading(mark, [material], 150);
   }
 
   addDivot(position: THREE.Vector3, heading: number, strength = 1): void {
@@ -179,7 +192,7 @@ export class InteractionMarks {
     );
     group.add(crescent);
     this.root.add(group);
-    this.fading.push({ object: group, materials: [material], age: 0, lifetime: 240 });
+    this.registerFading(group, [material], 240);
   }
 
   replayTrace(event: TraceEvent): void {
@@ -241,8 +254,11 @@ export class InteractionMarks {
       const mark = this.fading[index]!;
       mark.age += delta;
       const fade = THREE.MathUtils.clamp((mark.lifetime - mark.age) / 6, 0, 1);
-      for (const material of mark.materials) {
-        if ('opacity' in material) material.opacity = Number(material.opacity) * Math.min(1, fade + 0.02);
+      for (let materialIndex = 0; materialIndex < mark.materials.length; materialIndex += 1) {
+        const material = mark.materials[materialIndex]!;
+        if ('opacity' in material) {
+          material.opacity = mark.baseOpacities[materialIndex]! * Math.min(1, fade + 0.02);
+        }
       }
       if (mark.age > mark.lifetime) {
         mark.object.traverse((child) => {
@@ -257,9 +273,19 @@ export class InteractionMarks {
 
   reset(): void {
     for (const ripple of this.ripples) {
-      for (const line of ripple.lines) line.removeFromParent();
+      for (const line of ripple.lines) {
+        line.geometry.dispose();
+        (line.material as THREE.Material).dispose();
+        line.removeFromParent();
+      }
     }
-    for (const mark of this.fading) mark.object.removeFromParent();
+    for (const mark of this.fading) {
+      mark.object.traverse((child) => {
+        if (child instanceof THREE.Line || child instanceof THREE.LineSegments) child.geometry.dispose();
+      });
+      for (const material of mark.materials) material.dispose();
+      mark.object.removeFromParent();
+    }
     this.ripples.length = 0;
     this.fading.length = 0;
     this.clearTrail();
@@ -279,5 +305,40 @@ export class InteractionMarks {
       lines.push(line);
     }
     this.ripples.push({ lines, age: 0 });
+  }
+
+  private ensureTrail(ballId: string): BallTrail {
+    const existing = this.ballTrails.get(ballId);
+    if (existing) return existing;
+    const buffer = new Float32Array(MAX_TRAIL_POINTS * 3);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(buffer, 3));
+    geometry.setDrawRange(0, 0);
+    const line = new THREE.Line(geometry, lineMaterial(0.2));
+    line.name = `ball-trail-${ballId}`;
+    line.frustumCulled = false;
+    const trail = { positions: [], buffer, geometry, line } satisfies BallTrail;
+    this.ballTrails.set(ballId, trail);
+    this.root.add(line);
+    return trail;
+  }
+
+  private registerFading(object: THREE.Object3D, materials: THREE.Material[], lifetime: number): void {
+    this.fading.push({
+      object,
+      materials,
+      baseOpacities: materials.map((material) => 'opacity' in material ? Number(material.opacity) : 1),
+      age: 0,
+      lifetime,
+    });
+    while (this.fading.length > MAX_FADING_MARKS) {
+      const oldest = this.fading.shift();
+      if (!oldest) break;
+      oldest.object.traverse((child) => {
+        if (child instanceof THREE.Line || child instanceof THREE.LineSegments) child.geometry.dispose();
+      });
+      for (const material of oldest.materials) material.dispose();
+      oldest.object.removeFromParent();
+    }
   }
 }

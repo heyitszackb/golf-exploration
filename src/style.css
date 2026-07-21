@@ -1,7 +1,8 @@
 :root {
   color-scheme: light;
   font-family: Georgia, "Times New Roman", serif;
-  background: #d8c5a2;
+  background: #ebd9b3;
+  color: #514536;
   font-synthesis: none;
 }
 
@@ -20,8 +21,8 @@ body,
 
 body {
   background:
-    radial-gradient(circle at 48% 32%, rgb(236 225 199 / 72%), transparent 61%),
-    #d8c5a2;
+    radial-gradient(circle at 48% 32%, rgb(247 236 208 / 54%), transparent 64%),
+    #ebd9b3;
 }
 
 #app {
@@ -33,20 +34,26 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  background: #ebd9b3;
   outline: none;
   touch-action: none;
 }
 
+#world:focus-visible {
+  outline: 2px solid rgb(81 69 54 / 72%);
+  outline-offset: -4px;
+}
+
 #paper-grain {
   position: absolute;
-  inset: -25%;
+  inset: -18%;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.18;
+  opacity: 0.065;
   mix-blend-mode: multiply;
   background-image:
-    url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='4' seed='17' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.14'/%3E%3C/svg%3E"),
-    repeating-linear-gradient(4deg, transparent 0 7px, rgb(62 49 35 / 3%) 8px, transparent 9px 15px);
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='4' seed='17' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.11'/%3E%3C/svg%3E"),
+    repeating-linear-gradient(4deg, transparent 0 8px, rgb(62 49 35 / 2.5%) 9px, transparent 10px 17px);
   transform: rotate(0.01deg);
 }
 
@@ -54,8 +61,7 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  opacity: 0.12;
-  background: radial-gradient(ellipse at center, transparent 35%, rgb(76 57 35 / 12%) 110%);
+  background: radial-gradient(ellipse at center, transparent 45%, rgb(76 57 35 / 9%) 106%);
 }
 
 #loading {
@@ -64,8 +70,8 @@ body {
   z-index: 3;
   display: grid;
   place-items: center;
-  color: #5e513f;
-  background: #dfd0ae;
+  color: #514536;
+  background: #ebd9b3;
   font-size: 0.78rem;
   font-style: italic;
   letter-spacing: 0.08em;
@@ -84,10 +90,10 @@ body {
   z-index: 4;
   min-width: 12rem;
   padding: 8px 10px;
-  color: #4b4133;
-  border: 1px solid rgb(89 73 53 / 24%);
-  background: rgb(228 214 184 / 84%);
-  box-shadow: 0 2px 16px rgb(66 47 24 / 8%);
+  color: #514536;
+  border: 1px solid rgb(81 69 54 / 30%);
+  background: rgb(235 217 179 / 88%);
+  box-shadow: 2px 3px 0 rgb(81 69 54 / 7%);
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre;
   pointer-events: none;
@@ -100,9 +106,8 @@ body {
   display: grid;
   place-items: center;
   padding: 24px;
-  color: #4f4537;
-  background: rgb(220 202 166 / 78%);
-  backdrop-filter: blur(3px);
+  color: #514536;
+  background: rgb(81 69 54 / 18%);
 }
 
 .pause-panel[hidden] {
@@ -112,9 +117,9 @@ body {
 .pause-sheet {
   width: min(32rem, 100%);
   padding: 24px 26px;
-  border: 1px solid rgb(82 68 50 / 28%);
-  background: #dfcfab;
-  box-shadow: 0 14px 50px rgb(61 46 27 / 16%);
+  border: 1px solid rgb(81 69 54 / 38%);
+  background: #ebd9b3;
+  box-shadow: 5px 7px 0 rgb(81 69 54 / 12%);
 }
 
 .pause-sheet h1 {
@@ -134,7 +139,7 @@ body {
   gap: 8px;
   margin: 18px 0;
   padding: 14px;
-  border: 1px solid rgb(82 68 50 / 22%);
+  border: 1px solid rgb(81 69 54 / 26%);
 }
 
 .pause-sheet label {
@@ -143,16 +148,36 @@ body {
   align-items: center;
 }
 
+.pause-sheet input {
+  accent-color: #667258;
+}
+
 .pause-sheet button {
   padding: 7px 12px;
   color: inherit;
-  border: 1px solid rgb(82 68 50 / 35%);
-  background: #d3bd93;
+  border: 1px solid rgb(81 69 54 / 46%);
+  border-radius: 0;
+  background: #dbc69b;
   cursor: pointer;
+}
+
+.pause-sheet button:hover {
+  background: #d3bd91;
+}
+
+.pause-sheet button:focus-visible,
+.pause-sheet input:focus-visible {
+  outline: 2px solid #514536;
+  outline-offset: 3px;
 }
 
 body.high-contrast #world {
   filter: contrast(1.24) saturate(0.82);
+}
+
+body.high-contrast #diagnostics,
+body.high-contrast .pause-sheet {
+  border-color: #514536;
 }
 
 @media (prefers-reduced-motion: reduce) {

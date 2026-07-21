@@ -1,6 +1,6 @@
 # Golf Exploration
 
-A browser-native 3D golf landscape that plays like a living pencil drawing. The player can walk continuously, drive the cart, place and hit multiple balls, leave physical traces, lose a ball off-screen, find it again, and resume the same place after reloading. Normal play contains no HUD, score, minimap, aim line, or camera controls.
+A browser-native 3D golf landscape that plays like a living pencil-and-ink drawing on warm parchment. The player can walk continuously, drive the cart, place and hit multiple balls, leave physical traces, lose a ball off-screen, find it again, and resume the same place after reloading. Normal play contains no HUD, score, minimap, aim line, or camera controls.
 
 ![A pencil-drawn overhead view of the golfer exploring the course](docs/images/gameplay.png)
 
@@ -18,20 +18,26 @@ Open the URL printed by Vite. The production build is created with `npm run buil
 ## How to play
 
 - Hold or drag on the landscape to walk toward the pointer.
-- Use `WASD` or the arrow keys for keyboard movement; hold `Shift` for a brisk walk.
-- Press `E` near a ball to enter stance. Drag and release on the landscape to swing; `A`/`D` make small body-alignment adjustments.
+- Use `WASD` or the arrow keys for keyboard movement; hold `Shift` to reach farther at a brisk walk. The golfer turns into the route before accelerating and uses a distance-driven gait rather than sliding.
+- Press `E` or `Space` near a ball. The golfer walks into a side-on address automatically. After the stance settles, pull the pointer back/down to raise the club and set power; a small sideways component adjusts the shot direction. Release to begin the downswing. The ball leaves only when the club reaches the named impact moment, and the golfer completes a follow-through before returning to walking.
+- While settled at address, `A`/`D` or the left/right arrows make small alignment adjustments. `Escape`, `E`, or `Space` leaves stance without taking a shot.
 - Hold `B` to place another ball on nearby safe ground.
-- Press `E` near the driver side of the cart to enter it. Use `W`/`S` to accelerate or reverse, `A`/`D` to steer, `Space` to brake, and `E` to park and exit.
-- Press `Escape` outside stance to open the pause, controls, and accessibility sheet.
+- Press `E` or `Space` near the cart to enter it. Use `W`/`S` to accelerate or reverse, `A`/`D` to steer, `Space` to brake, and `E` to park and exit at a safe point.
+- Press `Escape` outside stance to open the semantic pause, controls, and accessibility sheet. It offers higher contrast, larger balls, reduced ambient motion, and stronger sound cues.
+
+Releasing a walking pointer stops the route. A canceled/lost pointer, focus loss, page hiding, or opening pause also clears active movement and cancels an unfinished backswing; none of those cancellation paths can launch the ball.
 
 The camera always stays with the golfer. It never pans to a ball and cannot rotate or zoom. If a shot leaves the screen, walk or drive in its direction to find it.
 
-Developer scenario controls remain available:
+Developer shot scenarios are available only on a Vite development URL that includes `?debug`:
 
-- `1` or `Space` while walking: deterministic fairway shot
+- `1`: deterministic fairway shot
 - `2`: bunker shot
 - `3`: water shot
 - `4`: green approach
+
+Maintenance and diagnostics keys are also available:
+
 - `R`: reset the starting composition
 - `F3`: diagnostics
 - `P`: save immediately
@@ -40,22 +46,26 @@ Developer scenario controls remain available:
 
 - A property-wide, versioned analytic field with seamless 48 m render/collision chunks and physical outer boundaries.
 - Rapier kinematic collision for the golfer and cart, plus a custom deterministic 120 Hz multi-ball golf solver.
-- Cursor-led traversal with local steering, surface resistance, slope limits, water/cliff safety, provisional foot grounding, and named locomotion events.
-- A drivable, parkable cart with safe entry/exit and persistent paired tracks.
-- Embodied ball acknowledgment, stance, body alignment, drag/release swing, named club impact, ball placement, cup capture, off-screen simulation, and rediscovery.
+- Faster cursor-led traversal with turn-before-translation steering, smooth acceleration/deceleration, surface resistance, slope limits, water/cliff safety, independent foot grounding, a distance-driven gait, and named footstep events.
+- A longitudinally modeled, drivable, parkable cart with steering/wheel motion, safe entry/exit, ground alignment, and persistent paired tracks.
+- Embodied ball acknowledgment, automatic walk-to-address, body alignment, pointer-driven backswing, delayed named club impact, follow-through/recovery, ball placement, cup capture, off-screen simulation, and rediscovery.
 - IndexedDB sessions for golfer, cart, all retained balls, traces, world time/weather, and accessibility settings; denied storage falls back to a fully playable in-memory session.
 - Persistent compact trace journals for footprints, cart tracks, divots, pitch marks, and sand marks.
-- Procedural positional Web Audio for footsteps and physical impacts, unlocked only after a user gesture.
-- Procedural grass, water, linework, birds, and shared deterministic wind/weather.
-- Fixed high-angle orthographic rendering with no pan, rotation, zoom, or ball-follow path.
-- A semantic pause/settings surface outside play with contrast, ball-size, reduced-motion, and stronger-sound options.
-- WebGL context recovery, hidden/page lifecycle checkpoints, input cancellation, and phone-layout verification.
+- Procedural positional Web Audio for footsteps, club movement/contact, cart cadence, landings, sand, water, and cup response, unlocked only after a user gesture.
+- A synchronous typed world-event seam that fans physical events out to audio, reactive surfaces, and ambient life without putting presentation imports in event producers.
+- A shared parchment/graphite palette, pigmented terrain wash, semantic ink contours, directional hatching and stipple, hatched bunker lips/raking, still-water linework, restrained dithering, and soft contact shading.
+- Streamed instanced grass, chunk-for-chunk with the terrain, using a fixed-budget shader interaction field for golfer, foot, cart, ball, landing, and club disturbances.
+- Three low-frequency procedural bird flocks (twelve birds) that can rest, take off, circle, and land, and react to nearby golfer, cart, club, landing, and water events.
+- One camera-stabilized directional shadow source with a paper-sky fill, tight shadow budget, terrain receivers, and inexpensive analytic contact shadows.
+- Fixed high-angle orthographic rendering centered on the golfer, with no pan, rotation, zoom, or ball-follow path.
+- A semantic pause/settings surface outside play with contrast, ball-size, reduced-motion, and stronger-sound options. Reduced motion preserves the essential gait and swing language while quieting ambient motion.
+- WebGL context recovery, hidden/page lifecycle checkpoints, pointer cancellation that cannot commit a swing, and phone-layout verification.
 
 ## Can the visual style change later?
 
 Yes. Gameplay does not depend on the pencil renderer.
 
-The authoritative property field, chunk streamer, Rapier world, golfer/cart controllers, ball solver, trace journal, session schema, input actions, and domain events are independent of the current Three.js materials and generated drawing marks. A future renderer can replace the paper palette, linework, grass, water, props, characters, or even the entire visual language while continuing to consume the same world samples and events.
+The authoritative property field, chunk streamer, Rapier world, golfer/cart controllers, swing sequence, ball solver, trace journal, session schema, input actions, and domain events are independent of the current Three.js materials and generated drawing marks. A future renderer can replace the paper palette, linework, grass, water, props, characters, or even the entire visual language while continuing to consume the same world samples, transforms, swing snapshots, and events.
 
 The key rule is to preserve the contracts documented in [`docs/visual-style-contract.md`](./docs/visual-style-contract.md). A replacement renderer must keep visual terrain coincident with `propertyField`, keep world-space scale and coordinates, and preserve physical attachment points and named animation events. This permits a new shader style or authored golfer/cart GLBs without rewriting traversal, golf physics, persistence, or course data.
 
@@ -65,20 +75,23 @@ The key rule is to preserve the contracts documented in [`docs/visual-style-cont
 Property blueprint + authoritative field
                 |
         deterministic chunk streamer
-          /             |             \
- Three.js renderer   Rapier world   trace journals
-          \             |             /
-      golfer/cart controllers + multi-ball solver
-                       |
-        domain events, audio, IndexedDB session
+          /                         \
+ illustrated terrain             Rapier world
+          \                         /
+ golfer/cart controllers + swing + multi-ball solver
+          |                  |
+  typed world events    session snapshots + traces
+       /       \                  |
+ renderer    positional audio  IndexedDB
 ```
 
 Important source boundaries:
 
 - `src/world`: property schema, field, chunks, traces, and environment
 - `src/physics`: streamed Rapier collision/query world and kinematic agents
-- `src/simulation`: golfer, cart, and golf-ball state machines
-- `src/render`: replaceable illustrated renderer, provisional figures, marks, and ambient life
+- `src/simulation`: golfer, cart, swing-sequence, and golf-ball state machines
+- `src/core`: renderer-agnostic typed world-event contract and synchronous fan-out
+- `src/render`: replaceable illustrated renderer, centralized art grammar/lighting, provisional figures, chunked reactive grass, marks, and ambient flocks
 - `src/audio`: replaceable event-driven Web Audio presentation
 - `src/persistence`: versioned world-session storage and graceful fallback
 - `src/main.ts`: lifecycle and typed orchestration
